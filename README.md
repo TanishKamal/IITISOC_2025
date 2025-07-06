@@ -1,117 +1,42 @@
-!pip install transformers diffusers lpips accelerate
-!pip install torch torchvision
-!pip install diffusers[torch]
-!pip install transformers
-!pip install tqdm
-!pip install pillow
-!pip install matplotlib
-!pip install ipython
-!pip install numpy
+This project is designed to generate images from natural language text prompts using the Stable Diffusion model. It uses open-source tools provided by Hugging Face, particularly the diffusers and transformers libraries. The model can create photorealistic or artistic images based on any description you give it.
 
-import torch
-from transformers import CLIPTextModel, CLIPTokenizer
-from diffusers import AutoencoderKL, UNet2DConditionModel, LMSDiscreteScheduler
-from tqdm.auto import tqdm
-from torch import autocast
-from PIL import Image
-from matplotlib import pyplot as plt
-import numpy
-from torchvision import transforms as tfms
-torch_device = "cpu"
-from transformers.utils import logging
-logging.set_verbosity_info()
+Step-by-Step Explanation:
 
-vae = AutoencoderKL.from_pretrained("CompVis/stable-diffusion-v1-4", subfolder="vae", use_auth_token=True)
+1. Installing the Necessary Libraries-
+Before running the model, installed several Python packages. These include libraries for:
+Running the core model (PyTorch, diffusers),
+Tokenizing and encoding the text input (transformers),
+Displaying and saving images (Pillow, Matplotlib),
+Accelerating execution (with or without GPU),
+Tracking progress (TQDM),
+These libraries together support both the backend model and user interaction or experimentation.
 
+2. Text Tokenization and Embedding-
+The process starts by taking the user’s input prompt — for example, “a futuristic city at sunset.” This natural language prompt is converted into a numerical format (tokens) using a tokenizer. These tokens are then passed into a language model to produce an embedding, which is a mathematical representation capturing the meaning of the prompt.
+This embedding is essential because the image generation process needs to understand what kind of image it is supposed to create — the embedding carries that semantic information.
 
+3. Image Generation Using Diffusion-
+Stable Diffusion works in a unique way. Instead of generating an image directly from the embedding, it begins with random noise and then slowly removes noise step-by-step to form a meaningful image. This is done using a special model called U-Net.
 
-tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+Each step of denoising is guided by:
+The embedding (which tells the model what we're asking for).
+A scheduler (which controls how much noise is removed at each step).
+Over many iterations, the model transforms pure noise into a clear image that matches the prompt.
 
+4. Decoding the Latent Representation-
+While generating the image, Stable Diffusion doesn’t operate in normal image space (like pixels). It works in a compressed form called latent space for efficiency.
+Once the final noise is cleaned up and the model is satisfied, it uses a decoder (called a Variational Autoencoder or VAE) to convert the latent image into a standard RGB image that we can view, save, or share.
 
-text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14")
+5. Displaying and Saving the Output-
+After decoding, the resulting image can be displayed directly in the Python environment using image libraries or saved as a .png or .jpg file. This part is typically handled using libraries like Pillow or Matplotlib.
 
+Behind-the-Scenes Components:
 
-
-unet = UNet2DConditionModel.from_pretrained("CompVis/stable-diffusion-v1-4", subfolder="unet", use_auth_token=True)
-
-
-
-scheduler = LMSDiscreteScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000)
-
-vae = vae.to(torch_device)
-text_encoder = text_encoder.to(torch_device)
-unet = unet.to(torch_device)
-prompt = ["View of a sea from the beach with palm trees around with humans swimming in the sea and clear sky. Overcast skies, high detail, ultra-realistic, cinematic, 4K, concept art style." ]
-height = 512
-width = 768
-num_inference_steps = 50
-guidance_scale = 7.5
-generator = torch.manual_seed(4)
-batch_size = 1
-
-# Prep text
-text_input = tokenizer(prompt, padding="max_length", max_length=tokenizer.model_max_length, truncation=True, return_tensors="pt")
-with torch.no_grad():
-  text_embeddings = text_encoder(text_input.input_ids.to(torch_device))[0]
-max_length = text_input.input_ids.shape[-1]
-uncond_input = tokenizer(
-    [""] * batch_size, padding="max_length", max_length=max_length, return_tensors="pt"
-)
-with torch.no_grad():
-  uncond_embeddings = text_encoder(uncond_input.input_ids.to(torch_device))[0]
-text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
-
-# Prep Scheduler
-scheduler.set_timesteps(num_inference_steps)
-
-# Prep latents
-latents = torch.randn(
-(batch_size, unet.in_channels, height // 8, width // 8),
-generator=generator,
-)
-
-latents = latents.to(torch_device)
-latents = latents * scheduler.sigmas[0] # Need to scale to match k
-print(type(scheduler.timesteps))
-print(scheduler.timesteps)
-print(len(scheduler.timesteps))
-print(len(scheduler.sigmas))
-
-    # Loop
-with autocast("cuda"):
-    for t in tqdm(scheduler.timesteps):
-        latent_model_input = torch.cat([latents] * 2)
-        sigma = scheduler.sigmas[(scheduler.timesteps == t).nonzero(as_tuple=True)[0].item()]
-        latent_model_input = latent_model_input / ((sigma**2 + 1) ** 0.5)
-
-        with torch.no_grad():
-            noise_pred = unet(latent_model_input, t, encoder_hidden_states=text_embeddings)["sample"]
-
-        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-        latents = scheduler.step(noise_pred, t, latents)["prev_sample"]
-
-
-
-# scale and decode the image latents with vae
-latents = 1 / 0.18215 * latents
-
-with torch.no_grad():
-    image = vae.decode(latents)
-
-
-with torch.no_grad():
-    decoded_output = vae.decode(latents)
-
-# Extract the tensor from the decoder output
-# Usually it is `sample` attribute, but confirm with your model's docs or print the output.
-image_tensor = decoded_output.sample  # replace `.sample` with actual attribute if different
-
-# Now process the tensor as usual
-image = (image_tensor / 2 + 0.5).clamp(0, 1)
-image = image.detach().cpu().permute(0, 2, 3, 1).numpy()
-images = (image * 255).round().astype("uint8")
-pil_images = [Image.fromarray(img) for img in images]  # use img instead of image inside list comp
-pil_images[0]
-
+Here are the important parts working together in the background:
+Tokenizer: Breaks down the text into numbers the model can understand.
+Text Encoder: Turns the text into an embedding (a dense vector).
+UNet Model: Gradually refines the noise image based on the text.
+Scheduler: Controls the denoising process over time.
+Decoder (VAE): Converts the final latent image into a real picture.
+Pipeline: A wrapper that connects all these parts so we don’t have to handle them individually.
+Pipeline: A wrapper that connects all these parts so we don’t have to handle them individually.
